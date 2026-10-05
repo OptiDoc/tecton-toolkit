@@ -49,6 +49,7 @@ jobs:
       tests: tests/Plugin.LayoutManager.Tests/Plugin.LayoutManager.Tests.csproj
       description: manifest/manifest.json
       source: out/content
+      framework: net48
 ```
 
 Выпуск по тегу (`.github/workflows/release.yml` плагина):
@@ -68,8 +69,10 @@ jobs:
       project: src/Plugin.LayoutManager/Plugin.LayoutManager.csproj
       description: manifest/manifest.json
       source: out/content
+      framework: net48
     secrets:
       publisher-key: ${{ secrets.TECTON_PUBLISHER_KEY }}
+      toolkit-token: ${{ secrets.TECTON_TOKEN }}
 ```
 
 Проверки выпуска: тег без `v` должен совпадать с полем `version` описания, имя
@@ -82,10 +85,28 @@ jobs:
 | Секрет | Что это | Как получить |
 | --- | --- | --- |
 | `TECTON_PUBLISHER_KEY` | Приватный ключ издателя, base64 (32 байта) | `keygen`; приватный ключ — только в секретах, публичный — в настройках клиента |
-| `toolkit-token` | Токен доступа к этому репозиторию, если оно приватное | Токен GitHub с правом чтения; нужен только при приватном `tecton-toolkit` |
+| `TECTON_TOKEN` (в плагине; передаётся как `toolkit-token`) | Токен GitHub: чтение `tecton-toolkit` и релизов ядра `tecton` | Токен с правом чтения обоих приватных репозиториев |
+
+## Как конвейеры готовят содержимое
+
+Оба конвейера перед упаковкой выполняют два шага:
+
+1. **Пакет контракта из релизов ядра.** По полю `core_min` описания скачивается
+   `Modules.Abstractions.<core_min>.nupkg` из релиза `v<core_min>` репозитория
+   `tecton` в локальный источник `local-feed/` (конвенция: релиз ядра `vX.Y.Z`
+   содержит пакет `Modules.Abstractions.X.Y.Z.nupkg`). Плагин должен иметь
+   `nuget.config` с этим источником — тогда версия пакета в проекте всегда равна
+   `core_min`.
+2. **Подготовка содержимого** (задан `project`): `dotnet publish` проекта в
+   `<source>/plugin` (вход `framework` ограничивает целевую среду, для
+   multi-TFM обязателен, например `net48`), затем копирование каталогов `i18n/`
+   и `assets/` из корня репозитория в `<source>/`, если они есть.
+
+Дальше сборка, тесты, упаковка и проверка архива идут как раньше.
 
 ## Требования
 
 - .NET SDK 8.0.x, `jq` и `gh` (на стандартном раннере GitHub уже есть).
 - Пакет контракта для плагина: `Modules.Abstractions` версии, равной `core_min`
-  описания (публикуется при выпуске ядра, репозиторий `tecton`).
+  описания; лежит в релизе `v<core_min>` репозитория `tecton` (секрет
+  `toolkit-token` должен давать доступ и к `tecton-toolkit`, и к релизам ядра).

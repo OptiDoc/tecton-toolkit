@@ -20,6 +20,11 @@ on:
         description: Каталог содержимого для архива (plugin/, i18n/, assets/ …)
         required: true
         type: string
+      framework:
+        description: Целевая среда для publish (net48, net8.0; пусто — все из проекта)
+        required: false
+        type: string
+        default: ""
       toolkit-ref:
         description: Ветка или тег tecton-toolkit
         required: false
@@ -52,11 +57,36 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+      - name: Пакет контракта из релизов ядра
+        env:
+          GH_TOKEN: ${{ secrets.toolkit-token || github.token }}
+        run: |
+          set -euo pipefail
+          core_min=$(jq -r '.core_min' "${{ inputs.description }}")
+          mkdir -p local-feed
+          gh release download "v${core_min}" --repo OptiDoc/tecton \
+            --pattern "Modules.Abstractions.${core_min}.nupkg" \
+            --dir local-feed --clobber
       - name: Build
         run: dotnet build "${{ inputs.project }}" -c Release --nologo
       - name: Test
         if: ${{ inputs.tests != '' }}
         run: dotnet test "${{ inputs.tests }}" -c Release --no-build --nologo
+      - name: Prepare content
+        if: ${{ inputs.project != '' }}
+        env:
+          PROJECT: ${{ inputs.project }}
+          SOURCE: ${{ inputs.source }}
+          FRAMEWORK: ${{ inputs.framework }}
+        run: |
+          set -euo pipefail
+          args=(-c Release --no-restore -o "$SOURCE/plugin")
+          if [ -n "$FRAMEWORK" ]; then args+=(-f "$FRAMEWORK"); fi
+          dotnet publish "$PROJECT" "${args[@]}"
+          mkdir -p "$SOURCE"
+          for d in i18n assets; do
+            if [ -d "$d" ]; then rm -rf "$SOURCE/$d"; cp -r "$d" "$SOURCE/"; fi
+          done
       - name: Pack, sign, verify, release (тег = версия = имя архива)
         env:
           PUBLISHER_KEY: ${{ secrets.publisher-key }}

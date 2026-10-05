@@ -18,6 +18,11 @@ internal static class Packer
     /// <summary>Собирает архив: файлы из <paramref name="source"/> + сгенерированный extension.json.</summary>
     public static (string Sha256, long Size) Build(Description d, string source, string output)
     {
+        if (d.ManifestVersion != "1.3")
+        {
+            throw new PackException("инструмент упаковки выпускает только описание 1.3 (стандарт §1.8)");
+        }
+
         if (!Directory.Exists(source))
         {
             throw new PackException($"каталог содержимого не найден: {source}");

@@ -25,7 +25,9 @@ internal static class SelfTest
   },
   "install": { "target": "autocad_extension", "subpath": "mod-layout/1.0.0" },
   "commands": [
-    { "id": "open_layout_manager", "file": "plugin/LayoutManager.dll", "method": "OpenLayoutManager" }
+    { "id": "open_layout_manager", "title": { "ru": "Открыть диспетчер" },
+      "file": "plugin/LayoutManager.dll", "method": "OpenLayoutManager" },
+    { "id": "layout_properties", "title": { "ru": "Свойства листа" } }
   ],
   "ui": { "tab": "Tecton", "panel": "Layout Manager", "order": 10 },
   "package": { "url": "", "sha256": "", "size": 0, "signature": "" }
@@ -47,8 +49,28 @@ internal static class SelfTest
             var descriptionPath = Path.Combine(root, "manifest.json");
             File.WriteAllText(descriptionPath, Manifest.ReplaceLineEndings("\n"), new UTF8Encoding(false));
 
+            ExpectFailure(() => Description.Parse(
+                    Manifest.Replace("  \"name\": { \"ru\": \"Диспетчер листов\" },\n", ""),
+                    "no-name"),
+                "описание без name отклоняется");
+            ExpectFailure(() => Description.Parse(
+                    Manifest.Replace("\"publisher\": \"OptiDoc\"", "\"publisherX\": \"OptiDoc\""), "bogus"),
+                "неизвестное поле отклоняется");
+            ExpectFailure(() => Description.Parse(
+                    Manifest.Replace(
+                        ", \"title\": { \"ru\": \"Свойства листа\" }", ""), "no-title"),
+                "команда без title отклоняется");
+            ExpectFailure(() => Description.Parse(
+                    Manifest.Replace("\"manifest_version\": \"1.3\"", "\"manifest_version\": \"1.2\""),
+                    "v12"),
+                "описание 1.2 с полями 1.3 отклоняется");
+
             var archive1 = Path.Combine(root, "mod-layout-1.0.0.zip");
             var d = Description.Load(descriptionPath);
+            Check(d.Commands[1].File == "plugin/LayoutManager.dll",
+                "file команды выводится из entrypoint.assembly");
+            Check(d.Commands[1].Method == "LayoutProperties",
+                "method выводится из id команды");
             var (sha256, size) = Packer.Build(d, source, archive1);
             Check(sha256.Length == 64, "sha256 длиной 64 знака");
             Check(size > 0, "архив не пуст");
