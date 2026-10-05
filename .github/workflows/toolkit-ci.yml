@@ -1,0 +1,23 @@
+name: toolkit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: Build + selftest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build
+        run: dotnet build tools/PackageTool/PackageTool.csproj -c Release --nologo
+      - name: Selftest (детерминизм, подпись, отказы на нарушениях)
+        run: dotnet run --project tools/PackageTool/PackageTool.csproj -c Release --no-build -- selftest

@@ -1,0 +1,100 @@
+name: plugin-release
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Путь к csproj или sln, который нужно собрать
+        required: true
+        type: string
+      tests:
+        description: Путь к тестовому csproj или sln (пусто — тестов нет)
+        required: false
+        type: string
+        default: ""
+      description:
+        description: Путь к описанию расширения (manifest.json)
+        required: true
+        type: string
+      source:
+        description: Каталог содержимого для архива (plugin/, i18n/, assets/ …)
+        required: true
+        type: string
+      toolkit-ref:
+        description: Ветка или тег tecton-toolkit
+        required: false
+        type: string
+        default: main
+    secrets:
+      publisher-key:
+        description: Приватный ключ издателя (base64, 32 байта) для подписи архива
+        required: true
+      toolkit-token:
+        description: Токен доступа к tecton-toolkit, если репозиторий приватный
+        required: false
+
+jobs:
+  release:
+    name: Pack, sign, GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout tecton-toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: OptiDoc/tecton-toolkit
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          token: ${{ secrets.toolkit-token || github.token }}
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build
+        run: dotnet build "${{ inputs.project }}" -c Release --nologo
+      - name: Test
+        if: ${{ inputs.tests != '' }}
+        run: dotnet test "${{ inputs.tests }}" -c Release --no-build --nologo
+      - name: Pack, sign, verify, release (тег = версия = имя архива)
+        env:
+          PUBLISHER_KEY: ${{ secrets.publisher-key }}
+          GH_TOKEN: ${{ github.token }}
+          PROJECT: ${{ inputs.project }}
+          TESTS: ${{ inputs.tests }}
+          DESC: ${{ inputs.description }}
+          SOURCE: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          expected="${tag#v}"
+          ver=$(jq -r '.version' "$DESC")
+          id=$(jq -r '.id' "$DESC")
+          if [ "$expected" != "$ver" ]; then
+            echo "Тег «$tag» не совпадает с версией описания «$ver»" >&2
+            exit 1
+          fi
+          slug=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]' | sed -E 's/-[0-9]+$//')
+          name="${slug}-${ver}.zip"
+          mkdir -p out
+          dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            pack --description "$DESC" --source "$SOURCE" --output "out/$name" | tee pack.log
+          sha256=$(sed -n 's/^sha256=//p' pack.log)
+          size=$(sed -n 's/^size=//p' pack.log)
+          signature=$(dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            sign --key "$PUBLISHER_KEY" --description "$DESC" --archive "out/$name")
+          cp "$DESC" out/manifest.json
+          dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            stamp --description out/manifest.json --sha256 "$sha256" --size "$size" --signature "$signature"
+          public_key=$(dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            pub --key "$PUBLISHER_KEY")
+          dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            verify --description out/manifest.json --archive "out/$name" --public-key "$public_key"
+          (cd out && sha256sum "$name" manifest.json > SHA256SUMS)
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" "out/$name" out/manifest.json out/SHA256SUMS --clobber
+          else
+            gh release create "$tag" "out/$name" out/manifest.json out/SHA256SUMS \
+              --title "$tag" --generate-notes
+          fi

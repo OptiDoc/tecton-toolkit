@@ -1,0 +1,80 @@
+name: plugin-ci
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Путь к csproj или sln, который нужно собрать
+        required: true
+        type: string
+      tests:
+        description: Путь к тестовому csproj или sln (пусто — тестов нет)
+        required: false
+        type: string
+        default: ""
+      description:
+        description: Путь к описанию расширения (manifest.json)
+        required: true
+        type: string
+      source:
+        description: Каталог содержимого для архива (plugin/, i18n/, assets/ …)
+        required: true
+        type: string
+      toolkit-ref:
+        description: Ветка или тег tecton-toolkit
+        required: false
+        type: string
+        default: main
+    secrets:
+      toolkit-token:
+        description: Токен доступа к tecton-toolkit, если репозиторий приватный
+        required: false
+
+jobs:
+  build-pack:
+    name: Build, test, pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout tecton-toolkit
+        uses: actions/checkout@v4
+        with:
+          repository: OptiDoc/tecton-toolkit
+          ref: ${{ inputs.toolkit-ref }}
+          path: .toolkit
+          token: ${{ secrets.toolkit-token || github.token }}
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build
+        run: dotnet build "${{ inputs.project }}" -c Release --nologo
+      - name: Test
+        if: ${{ inputs.tests != '' }}
+        run: dotnet test "${{ inputs.tests }}" -c Release --no-build --nologo
+      - name: Pack + verify (стандарт, часть 2)
+        id: pack
+        run: |
+          set -euo pipefail
+          desc="${{ inputs.description }}"
+          id=$(jq -r '.id' "$desc")
+          ver=$(jq -r '.version' "$desc")
+          slug=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]' | sed -E 's/-[0-9]+$//')
+          name="${slug}-${ver}.zip"
+          mkdir -p out
+          dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            pack --description "$desc" --source "${{ inputs.source }}" --output "out/$name" | tee pack.log
+          dotnet run --project .toolkit/tools/PackageTool -c Release -- \
+            verify --description "$desc" --archive "out/$name"
+          {
+            echo "name=$name"
+            echo "sha256=$(sed -n 's/^sha256=//p' pack.log)"
+            echo "size=$(sed -n 's/^size=//p' pack.log)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: out/${{ steps.pack.outputs.name }}
+          retention-days: 14
+          if-no-files-found: error

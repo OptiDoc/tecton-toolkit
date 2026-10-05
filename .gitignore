@@ -1,0 +1,16 @@
+# ===== .NET =====
+**/bin/
+**/obj/
+**/artifacts/
+TestResults/
+*.user
+*.suo
+
+# ===== Ключи и локальные отчёты (никогда не коммитить) =====
+*.key
+*.priv
+SHA256SUMS
+
+# ===== ОС и редакторы =====
+.DS_Store
+Thumbs.db
