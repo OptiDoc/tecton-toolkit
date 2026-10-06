@@ -71,7 +71,7 @@ jobs:
         run: dotnet build "${{ inputs.project }}" -c Release --nologo
       - name: Test
         if: ${{ inputs.tests != '' }}
-        run: dotnet test "${{ inputs.tests }}" -c Release --no-build --nologo
+        run: dotnet test "${{ inputs.tests }}" -c Release --nologo
       - name: Prepare content
         if: ${{ inputs.project != '' }}
         env:
@@ -80,12 +80,12 @@ jobs:
           FRAMEWORK: ${{ inputs.framework }}
         run: |
           set -euo pipefail
-          args=(-c Release --no-restore -o "$SOURCE/plugin")
+          args=(-c Release -o "$SOURCE/plugin")
           if [ -n "$FRAMEWORK" ]; then args+=(-f "$FRAMEWORK"); fi
           dotnet publish "$PROJECT" "${args[@]}"
-          mkdir -p "$SOURCE"
+          rm -rf "$SOURCE/i18n" "$SOURCE/assets"
           for d in i18n assets; do
-            if [ -d "$d" ]; then rm -rf "$SOURCE/$d"; cp -r "$d" "$SOURCE/"; fi
+            if [ -d "$d" ]; then cp -r "$d" "$SOURCE/"; fi
           done
       - name: Pack, sign, verify, release (тег = версия = имя архива)
         env:
