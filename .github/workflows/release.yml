@@ -25,6 +25,11 @@ on:
         required: false
         type: string
         default: ""
+      frameworks:
+        description: Многофлейворная сборка, через точку с запятой (net48;net8.0-windows) — первый фреймворк публикуется в plugin/, каждый следующий в plugin/{короткий алиас}/ (net8, net48 — канон ModuleFlavorResolver)
+        required: false
+        type: string
+        default: ""
       toolkit-ref:
         description: Ветка или тег tecton-toolkit
         required: false
@@ -78,11 +83,30 @@ jobs:
           PROJECT: ${{ inputs.project }}
           SOURCE: ${{ inputs.source }}
           FRAMEWORK: ${{ inputs.framework }}
+          FRAMEWORKS: ${{ inputs.frameworks }}
         run: |
           set -euo pipefail
-          args=(-c Release -o "$SOURCE/plugin")
-          if [ -n "$FRAMEWORK" ]; then args+=(-f "$FRAMEWORK"); fi
-          dotnet publish "$PROJECT" "${args[@]}"
+          rm -rf "$SOURCE"
+          mkdir -p "$SOURCE"
+          if [ -n "$FRAMEWORKS" ]; then
+            # W126: многофлейворный пакет — первый фреймворк в plugin/, остальные
+            # в plugin/{алиас}/ (net8.0-windows → net8): базовый слот остаётся
+            # net48-совместимым (канон пакета), CAD выбирает по рантайму.
+            first=1
+            for tf in ${FRAMEWORKS//;/ }; do
+              if [ "$first" = "1" ]; then
+                dotnet publish "$PROJECT" -c Release -f "$tf" -o "$SOURCE/plugin"
+                first=0
+              else
+                alias="${tf%%.*}"
+                dotnet publish "$PROJECT" -c Release -f "$tf" -o "$SOURCE/plugin/$alias"
+              fi
+            done
+          else
+            args=(-c Release -o "$SOURCE/plugin")
+            if [ -n "$FRAMEWORK" ]; then args+=(-f "$FRAMEWORK"); fi
+            dotnet publish "$PROJECT" "${args[@]}"
+          fi
           rm -rf "$SOURCE/i18n" "$SOURCE/assets"
           for d in i18n assets; do
             if [ -d "$d" ]; then cp -r "$d" "$SOURCE/"; fi
