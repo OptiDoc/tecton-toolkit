@@ -108,6 +108,37 @@ internal static class SelfTest
             ExpectFailure(() => Verify.Check(Description.Load(badSigPath), archive1, publicKey),
                 "verify отклоняет подпись чужого ключа");
 
+            // TECTON-122 (STANDARDS §2.7): гейт иконок ленты — полный набор
+            // (две темы × два размера × PNG с габаритами по суффиксу) проходит,
+            // неполный — архив отвергается на verify.
+            var assets = Path.Combine(source, "assets");
+            foreach (var iconSize in new[] { 16, 32 })
+            {
+                foreach (var iconTheme in new[] { "", ".dark" })
+                {
+                    WriteIcon(assets, $"icon-{iconSize}{iconTheme}.png", iconSize);
+                }
+            }
+
+            var iconArchive = Path.Combine(root, "icons-ok", "mod-layout-1.0.0.zip");
+            var (iconSha, iconSize2) = Packer.Build(d, source, iconArchive);
+            var iconStampedPath = Path.Combine(root, "manifest.icons.json");
+            File.Copy(descriptionPath, iconStampedPath);
+            Packer.Stamp(iconStampedPath, iconSha, iconSize2,
+                SignTool.Sign(privateKey, $"{d.Id}|{d.Version}|{iconSha}"));
+            Check(Verify.Check(Description.Load(iconStampedPath), iconArchive, publicKey) == iconSha,
+                "verify принимает архив с полным набором иконок (две темы × два размера)");
+
+            File.Delete(Path.Combine(assets, "icon-16.dark.png"));
+            var brokenArchive = Path.Combine(root, "icons-broken", "mod-layout-1.0.0.zip");
+            var (brokenSha, brokenSize) = Packer.Build(d, source, brokenArchive);
+            var brokenStampedPath = Path.Combine(root, "manifest.broken.json");
+            File.Copy(descriptionPath, brokenStampedPath);
+            Packer.Stamp(brokenStampedPath, brokenSha, brokenSize,
+                SignTool.Sign(privateKey, $"{d.Id}|{d.Version}|{brokenSha}"));
+            ExpectFailure(() => Verify.Check(Description.Load(brokenStampedPath), brokenArchive, publicKey),
+                "verify отклоняет неполный набор иконок (нет темы-побратима .dark)");
+
             File.WriteAllBytes(Path.Combine(source, "plugin", "setup.exe"), new byte[] { 1 });
             ExpectFailure(() => Packer.Build(d, source, Path.Combine(root, "forbidden.zip")),
                 "упаковка отклоняет .exe");
@@ -130,6 +161,25 @@ internal static class SelfTest
                 // временный каталог — не мешаем завершению
             }
         }
+    }
+
+    /// <summary>
+    /// TECTON-122: PNG-заглушка с корректной сигнатурой и IHDR-габаритами
+    /// size×size (гейт читает только первые 24 байта — этого достаточно).
+    /// </summary>
+    private static void WriteIcon(string dir, string name, int size)
+    {
+        Directory.CreateDirectory(dir);
+        var head = new byte[24];
+        head[0] = 0x89; head[1] = (byte)'P'; head[2] = (byte)'N'; head[3] = (byte)'G';
+        head[4] = 0x0D; head[5] = 0x0A; head[6] = 0x1A; head[7] = 0x0A; // сигнатура
+        head[11] = 13;                                                 // длина IHDR
+        head[12] = (byte)'I'; head[13] = (byte)'H'; head[14] = (byte)'D'; head[15] = (byte)'R';
+        head[16] = (byte)(size >> 24); head[17] = (byte)(size >> 16);
+        head[18] = (byte)(size >> 8); head[19] = (byte)size;
+        head[20] = (byte)(size >> 24); head[21] = (byte)(size >> 16);
+        head[22] = (byte)(size >> 8); head[23] = (byte)size;
+        File.WriteAllBytes(Path.Combine(dir, name), head);
     }
 
     private static void Check(bool condition, string name)

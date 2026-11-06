@@ -113,6 +113,10 @@ internal static class Verify
             CheckExtensionJson(d, extension.RootElement, seen);
         }
 
+        // TECTON-122 (STANDARDS §2.7): гейт иконок ленты — до возврата:
+        // неполный набор assets/ (две темы × два размера) = отказ.
+        CheckIconMatrix(seen);
+
         return sha256;
     }
 
@@ -137,6 +141,165 @@ internal static class Verify
         if (Array.IndexOf(ForbiddenExtensions, ext) >= 0)
         {
             throw new PackException($"запрещённое расширение: «{path}»");
+        }
+    }
+
+    /// <summary>
+    /// TECTON-122 (STANDARDS §2.7): гейт иконок ленты в архиве расширения —
+    /// каждое семейство assets/*.png обязано нести ПОЛНЫЙ набор: две темы
+    /// (базовая + «.dark»-побратим) × два размера (-16 малый слот + -32
+    /// большой; большая кнопка рендерит LargeImage 32 + Image 16-фолбэк) ×
+    /// PNG с габаритами по суффиксу (IHDR); .xaml-побратимы семейства — либо
+    /// у всех комбинаций, либо ни у одной. Иконок в assets/ может не быть
+    /// вовсе (кнопка без иконки, fail-soft на стороне CAD) — тогда гейт молчит.
+    /// Живой дефект-источник: в светлой теме ленты кнопки носили иконки
+    /// тёмной — набор терялся при сборке пакета молча.
+    /// </summary>
+    private static void CheckIconMatrix(List<(string Path, ZipArchiveEntry Entry)> seen)
+    {
+        var icons = seen
+            .Where(s => s.Path.StartsWith("assets/", StringComparison.Ordinal)
+                && s.Path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (icons.Count == 0)
+        {
+            return;
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, _) in icons)
+        {
+            names.Add(path);
+        }
+
+        var problems = new List<string>();
+        foreach (var (path, entry) in icons)
+        {
+            var stem = Path.GetFileNameWithoutExtension(path);
+            var theme = "";
+            if (stem.EndsWith(".dark", StringComparison.Ordinal))
+            {
+                theme = ".dark";
+                stem = stem.Substring(0, stem.Length - 5);
+            }
+
+            string family;
+            int size;
+            if (stem.EndsWith("-16", StringComparison.Ordinal))
+            {
+                family = stem.Substring(0, stem.Length - 3);
+                size = 16;
+            }
+            else if (stem.EndsWith("-32", StringComparison.Ordinal))
+            {
+                family = stem.Substring(0, stem.Length - 3);
+                size = 32;
+            }
+            else
+            {
+                problems.Add($"{path}: имя вне конвенции «семейство-16|-32[.dark].png»");
+                continue;
+            }
+
+            var peerTheme = theme.Length == 0 ? ".dark" : "";
+            if (!names.Contains($"assets/{family}-{size}{peerTheme}.png"))
+            {
+                problems.Add($"{path}: нет темы-побратима assets/{family}-{size}{peerTheme}.png (нужны ОБЕ темы)");
+            }
+
+            var peerSize = size == 16 ? 32 : 16;
+            if (!names.Contains($"assets/{family}-{peerSize}{theme}.png"))
+            {
+                problems.Add($"{path}: нет размера-побратима assets/{family}-{peerSize}{theme}.png (большая кнопка: 32 + 16-фолбэк)");
+            }
+
+            var (width, height) = PngDimensions(entry);
+            if (width != size || height != size)
+            {
+                problems.Add($"{path}: габариты {width}x{height} != {size}x{size}");
+            }
+        }
+
+        var xamls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, _) in seen)
+        {
+            if (path.StartsWith("assets/", StringComparison.Ordinal)
+                && path.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
+            {
+                xamls.Add(path);
+            }
+        }
+
+        var familyPng = new Dictionary<string, int>();
+        var familyXaml = new Dictionary<string, int>();
+        foreach (var (path, _) in icons)
+        {
+            var stem = Path.GetFileNameWithoutExtension(path);
+            var theme = "";
+            if (stem.EndsWith(".dark", StringComparison.Ordinal))
+            {
+                theme = ".dark";
+                stem = stem.Substring(0, stem.Length - 5);
+            }
+
+            var family = stem.EndsWith("-16", StringComparison.Ordinal)
+                || stem.EndsWith("-32", StringComparison.Ordinal)
+                    ? stem.Substring(0, stem.Length - 3)
+                    : stem;
+            familyPng[family] = familyPng.TryGetValue(family, out var png) ? png + 1 : 1;
+            if (xamls.Contains($"assets/{stem}{theme}.xaml"))
+            {
+                familyXaml[family] = familyXaml.TryGetValue(family, out var xaml) ? xaml + 1 : 1;
+            }
+        }
+
+        foreach (var (family, png) in familyPng)
+        {
+            familyXaml.TryGetValue(family, out var withXaml);
+            if (withXaml > 0 && withXaml < png)
+            {
+                problems.Add($"assets/: векторные .xaml семейства «{family}» несимметричны ({withXaml} из {png} PNG) — нужно у всех или ни у кого");
+            }
+        }
+
+        if (problems.Count > 0)
+        {
+            throw new PackException(
+                "гейт иконок ленты (STANDARDS §2.7, TECTON-122): " + string.Join("; ", problems));
+        }
+    }
+
+    /// <summary>(ширина, высота) PNG из IHDR-заголовка; битый/короткий файл — (0, 0).</summary>
+    private static (int Width, int Height) PngDimensions(ZipArchiveEntry entry)
+    {
+        try
+        {
+            using var stream = entry.Open();
+            var head = new byte[24];
+            var read = 0;
+            while (read < 24)
+            {
+                var chunk = stream.Read(head, read, 24 - read);
+                if (chunk <= 0)
+                {
+                    break;
+                }
+
+                read += chunk;
+            }
+
+            if (read < 24 || head[0] != 0x89 || head[1] != (byte)'P' || head[2] != (byte)'N'
+                || head[3] != (byte)'G')
+            {
+                return (0, 0);
+            }
+
+            return ((head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19],
+                (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23]);
+        }
+        catch (IOException)
+        {
+            return (0, 0);
         }
     }
 
